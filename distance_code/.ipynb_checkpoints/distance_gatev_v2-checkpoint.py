@@ -2,6 +2,11 @@ import math
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from collections import Counter
+import scipy.stats
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning) #remove python standard warning and have clear output
 
 periods = pd.read_csv("../distance_data/Periods.csv", header=None)
 Pt = pd.read_csv("../distance_data/Pt_formatted.csv", header=0)
@@ -20,14 +25,14 @@ daylag = 0
 wi_update = 1
 years = 2015 - 1990 + 0.5
 
-no_pairs = 20
+no_pairs = 10
 trading_costs = 0
 # buy/sell (percentage cost for opening and closing pairs: 0.001, 0.002, for example)
-percentage_costs = 0
+percentage_costs = 0.002
 # set whether (0) or not (2) positive trading volume is required for opening/closing a pair
 trade_req = 0
 # Choose how much loss we are willing to accePt on a given pair, compared to 1, i.e, 0.93 = 7% stop loss
-Stop_loss = 0.01
+Stop_loss = 0.95
 
 if Stop_loss != float('-inf'):
     stop_dir = 100 - (Stop_loss * 100)
@@ -78,6 +83,13 @@ days_open = np.zeros((no_pairs*10000, 1))
 no_pairs_opened = np.zeros((int(years*2-2), no_pairs))
 
 counter = 0  # Keeps track of the days in the main loop
+
+# --- Initialize state variables for chaining returns ---
+last_cc_val = 1.0
+last_fi_val = 1.0
+last_rmrf_val = 1.0
+
+asset_frequency_counter = Counter() # Needed for final analysis
 
 # ----------------------------------------------------
 # Start of Main Loop - Creating Price Index
@@ -214,6 +226,11 @@ while big_loop < (years * 2 - 2):
         pairs.append({"s1_col": int(ro), "s2_col": int(co),
                      "s1_ticker": Pt.columns[index_listed2[ro]], "s2_ticker": Pt.columns[index_listed2[co]]})
         sse[ro, co] = max_SSE  # prevent re-selection
+
+
+    for pair_data in pairs: # Needed for final analysis
+        asset_frequency_counter[pair_data['s1_ticker']] += 1
+        asset_frequency_counter[pair_data['s2_ticker']] += 1
 
     # pd.DataFrame(min_SSE_ro).to_csv("min_SSE_ro.csv", header=None, index=False)
     # pd.DataFrame(min_SSE_co).to_csv("min_SSE_co.csv", header=None, index=False)
@@ -514,13 +531,16 @@ while big_loop < (years * 2 - 2):
 
     # print(f"Rp_ew_cc len: {np.shape(Rp_ew_cc)} | value: {Rp_ew_cc}")
 
-    ret_acum_df['CC'][counter-six_months+1:counter+1] = np.cumprod(
-        1 + (Rp_ew_cc['Return'][counter-six_months+1:counter+1]))[:six_months]
-    # [MaxDD,~] = maxdrawdown(ret2tick(Rp_ew_cc(counter-Six_mo:counter-1,:)));
-    # MDDw(big_loop,2) = MaxDD;
-    # Sortino = sortinoratio(Rp_ew_cc(counter-Six_mo:counter-1,:),0);
-    # Sortino_w(big_loop,2) = Sortino;
-
+    start_idx = counter - six_months + 1
+    end_idx = counter + 1
+    
+    # Committed Capital (CC)
+    daily_cc_returns = Rp_ew_cc['Return'][start_idx:end_idx][:six_months]
+    semester_cumprod_cc = np.cumprod(1 + daily_cc_returns)
+    continuous_cumprod_cc = semester_cumprod_cc * last_cc_val
+    ret_acum_df['CC'][start_idx:end_idx] = continuous_cumprod_cc
+    if not continuous_cumprod_cc.empty:
+        last_cc_val = continuous_cumprod_cc.iloc[-1]
     #
     # vw-weighted, fully invested; weights "restart" from 1 every time a new pair is opened;
     # Capital divided between open portfolios.
@@ -575,25 +595,38 @@ while big_loop < (years * 2 - 2):
     # Sortino = sortinoratio(Rp_vw_fi(counter-Six_mo:counter-1,:),0);
     # Sortino_w(big_loop,4) = Sortino;
 
+    # Fully Invested (FI)
+    daily_fi_returns = Rp_vw_fi['Return'][start_idx:end_idx][:six_months]
+    semester_cumprod_fi = np.cumprod(1 + daily_fi_returns)
+    continuous_cumprod_fi = semester_cumprod_fi * last_fi_val
+    ret_acum_df['FI'][start_idx:end_idx] = continuous_cumprod_fi
+    if not continuous_cumprod_fi.empty:
+        last_fi_val = continuous_cumprod_fi.iloc[-1]
+
     RmRf[counter-six_months+1:counter +
                    1] = (Rm.iloc[counter-six_months+1:counter + 1, :] - Rf.iloc[counter-six_months+1:counter + 1, :]).to_numpy()
 
     risk_free['Return'][counter-six_months+1:counter + 1] = (Rf.iloc[counter-six_months+1:counter + 1, 0])
 
-    ret_acum_df['RMRF'][counter-six_months+1:counter+1] = np.cumprod(
-        1+(Rm.iloc[:six_months, 0]-Rf.iloc[:six_months, 0]).to_numpy())
+    # Market Benchmark (RMRF)
+    daily_rmrf_returns = (Rm.iloc[start_idx:end_idx, 0] - Rf.iloc[start_idx:end_idx, 0]).to_numpy()[:six_months]
+    semester_cumprod_rmrf = np.cumprod(1 + daily_rmrf_returns)
+    continuous_cumprod_rmrf = semester_cumprod_rmrf * last_rmrf_val
+    ret_acum_df['RMRF'][start_idx:end_idx] = continuous_cumprod_rmrf
+    if continuous_cumprod_rmrf.size > 0:
+        last_rmrf_val = continuous_cumprod_rmrf[-1]
 
-    ret_acum_df['SEMESTER'][counter-six_months+1:counter+1] = int(big_loop)
+    ret_acum_df['SEMESTER'][start_idx:end_idx] = int(big_loop)
     Rp_ew_cc['Semester'][counter-six_months+1:counter+1] = int(big_loop)
     Rp_vw_fi['Semester'][counter-six_months+1:counter+1] = int(big_loop)
     risk_free['Semester'][counter-six_months+1:counter+1] = int(big_loop)
 
     if Stop_loss == float("-inf"):
-        Rp_ew_cc.to_csv("../distance_results/duration_limit/Rp_ew_cc.csv", index=False)
-        Rp_vw_fi.to_csv("../distance_results/duration_limit/Rp_vw_fi.csv", index=False)
-        pd.DataFrame(RmRf).to_csv("../distance_results/duration_limit/RmRf.csv", header=None, index=False)
-        risk_free.to_csv("../distance_results/duration_limit/risk_free.csv")
-        ret_acum_df.to_csv("../distance_results/duration_limit/ret_acum_df.csv")
+        Rp_ew_cc.to_csv("../distance_results/Rp_ew_cc.csv", index=False)
+        Rp_vw_fi.to_csv("../distance_results/Rp_vw_fi.csv", index=False)
+        pd.DataFrame(RmRf).to_csv("../distance_results/RmRf.csv", header=None, index=False)
+        risk_free.to_csv("../distance_results/risk_free.csv")
+        ret_acum_df.to_csv("../distance_results/ret_acum_df.csv")
     else:
          
         Rp_ew_cc.to_csv(f"../distance_results/Rp_ew_cc.csv", index=False)
@@ -619,3 +652,168 @@ if Stop_loss == float('-inf'):
     operations_df.to_csv(f"../distance_results/duration_limit/operations.csv")
 else:
     operations_df.to_csv(f"../distance_results/operations.csv")
+
+##################################################################
+# FINAL ANALYSIS AND CHART GENERATION
+##################################################################
+
+print("\n\n========================================================")
+print("           FINAL PORTFOLIO ANALYSIS")
+print("========================================================")
+
+# --- Define Helper Functions for Performance Metrics ---
+
+def calculate_sortino_ratio(returns, risk_free_rate=0):
+    """Calculates the Sortino Ratio."""
+    target_return = 0
+    downside_returns = returns[returns < target_return]
+    if len(downside_returns) == 0:
+        return np.nan
+    expected_return = returns.mean()
+    downside_std = downside_returns.std()
+    sortino = (expected_return - risk_free_rate) / downside_std
+    return sortino * np.sqrt(252) # Annualize
+
+def calculate_max_drawdown(returns):
+    """Calculates the Maximum Drawdown."""
+    cumulative_returns = (1 + returns).cumprod()
+    peak = cumulative_returns.expanding(min_periods=1).max()
+    drawdown = (cumulative_returns - peak) / peak
+    return drawdown.min()
+
+# --- Part 1: Generate Data for "Descriptive Statistics" Table ---
+
+print("\n--- Descriptive Statistics for the Most Traded Assets (Table 2) ---")
+
+# Define how many top assets to analyze
+top_n_assets = 11 
+most_common_assets = asset_frequency_counter.most_common(top_n_assets)
+
+stats_data = []
+for asset_ticker, count in most_common_assets:
+    # Get the full return series for the asset
+    asset_returns = Rt[asset_ticker].dropna()
+    
+    # Calculate stats
+    mean_ret = asset_returns.mean()
+    std_dev = asset_returns.std()
+    sharpe_ratio = (mean_ret / std_dev) * np.sqrt(252) # Assuming Rf=0 for individual asset SR
+    min_ret = asset_returns.min()
+    max_ret = asset_returns.max()
+    
+    stats_data.append({
+        "Symbol": asset_ticker,
+        "Mean": f"{mean_ret:.4f}",
+        "Std Dev": f"{std_dev:.4f}",
+        "SR": f"{sharpe_ratio:.4f}",
+        "Min": f"{min_ret*100:.2f}",
+        "Max": f"{max_ret*100:.2f}"
+    })
+
+stats_df = pd.DataFrame(stats_data)
+print(stats_df.to_string(index=False))
+
+stats_df.to_csv(f"../distance_results/final_analysis_stats.csv")
+
+# --- Part 2: Generate Data for "Excess Returns" Table ---
+
+print("\n\n--- Performance Metrics of Trading Strategies (Table 3) ---")
+
+# Consolidate the portfolio returns, dropping any non-trading periods
+cc_returns = Rp_ew_cc[Rp_ew_cc['Return'] != 0]['Return'].dropna()
+fi_returns = Rp_vw_fi[Rp_vw_fi['Return'] != 0]['Return'].dropna()
+rf_returns = risk_free[risk_free.index.isin(cc_returns.index)]['Return'].dropna()
+
+# Align risk-free rates with portfolio returns
+cc_excess_returns = cc_returns - rf_returns
+fi_excess_returns = fi_returns - rf_returns
+
+# Calculate metrics for both strategies
+metrics = {}
+strategies = {
+    "Committed Capital": (cc_returns, cc_excess_returns),
+    "Fully Invested": (fi_returns, fi_excess_returns)
+}
+
+for name, (returns, excess_returns) in strategies.items():
+    if len(returns) > 0:
+        # Annualized values
+        ann_mean_return = returns.mean() * 252
+        ann_std_dev = returns.std() * np.sqrt(252)
+        ann_sharpe_ratio = (excess_returns.mean() * 252) / ann_std_dev
+        
+        metrics[name] = {
+            "Mean Return (%)": f"{ann_mean_return * 100:.3f}",
+            "Sharpe Ratio": f"{ann_sharpe_ratio:.3f}",
+            "Sortino Ratio": f"{calculate_sortino_ratio(returns, rf_returns.mean()):.3f}",
+            "t-statistic": f"{scipy.stats.ttest_1samp(returns, 0).statistic:.3f}",
+            "% of negative excess returns": f"{ (excess_returns < 0).sum() / len(excess_returns) * 100:.2f}",
+            "MDD (%)": f"{calculate_max_drawdown(returns) * 100:.2f}",
+            "Annualized STD (%)": f"{ann_std_dev * 100:.3f}",
+            "Skewness": f"{returns.skew():.3f}",
+            "Kurtosis": f"{returns.kurtosis():.3f}", # Pandas kurtosis is excess kurtosis (0 is normal)
+            "Minimum Daily Ret (%)": f"{returns.min() * 100:.3f}",
+            "Maximum Daily Ret (%)": f"{returns.max() * 100:.3f}"
+        }
+    else:
+        metrics[name] = {k: "N/A" for k in strategies["Committed Capital"][1]}
+
+
+performance_df = pd.DataFrame(metrics)
+print(performance_df)
+
+performance_df.to_csv(f"../distance_results/final_analysis_performance.csv")
+
+# --------------------
+# Generating chart
+# --------------------
+
+print("\n--- Generating Cumulative Excess Returns Plot ---")
+
+# We will plot only the "Committed Capital" strategy returns.
+# First, get the series of non-zero daily returns for this strategy.
+cc_returns = Rp_ew_cc[Rp_ew_cc['Return'] != 0]['Return'].dropna()
+
+# Get the corresponding risk-free rates for the same days
+if not cc_returns.empty:
+    rf_returns = risk_free.loc[cc_returns.index, 'Return'].dropna()
+
+    # Calculate the excess returns
+    cc_excess_returns = cc_returns - rf_returns
+
+    # Calculate the cumulative product of the excess returns
+    cumulative_cc = (1 + cc_excess_returns).cumprod()
+
+    cumulative_cc_df = pd.DataFrame(cumulative_cc)
+    cumulative_cc_df.to_csv(f"../distance_results/final_analysis_cum_return.csv")
+
+    # Use a simple numerical series (0, 1, 2, ...) for the x-axis
+    x_axis_data = range(len(cumulative_cc))
+
+    # --- Create the plot ---
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    ax.plot(x_axis_data, cumulative_cc, label='Committed Capital', linewidth=2, color='C0') # 'C0' is default blue
+
+    # Add titles and labels for clarity
+    ax.set_title('Cumulative Excess Returns (Committed Capital)', fontsize=16)
+    ax.set_xlabel('Trading Days', fontsize=12)
+    ax.set_ylabel('Cumulative Excess Returns', fontsize=12)
+    ax.legend(fontsize=12)
+
+    # Set a baseline at 1.0 for reference
+    ax.axhline(y=1, color='grey', linestyle='--', linewidth=1)
+    
+    print("Displaying plot...")
+    plt.show()
+
+    fig = ax.get_figure()
+    fig.savefig('./distance_cumm_return.png')
+
+else:
+    print("No trading data available to generate the plot.")
+
+print("\n========================================================")
+print("                 ANALYSIS COMPLETE")
+print("========================================================")

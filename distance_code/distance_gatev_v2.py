@@ -84,6 +84,11 @@ no_pairs_opened = np.zeros((int(years*2-2), no_pairs))
 
 counter = 0  # Keeps track of the days in the main loop
 
+# --- Initialize state variables for chaining returns ---
+last_cc_val = 1.0
+last_fi_val = 1.0
+last_rmrf_val = 1.0
+
 asset_frequency_counter = Counter() # Needed for final analysis
 
 # ----------------------------------------------------
@@ -526,13 +531,16 @@ while big_loop < (years * 2 - 2):
 
     # print(f"Rp_ew_cc len: {np.shape(Rp_ew_cc)} | value: {Rp_ew_cc}")
 
-    ret_acum_df['CC'][counter-six_months+1:counter+1] = np.cumprod(
-        1 + (Rp_ew_cc['Return'][counter-six_months+1:counter+1]))[:six_months]
-    # [MaxDD,~] = maxdrawdown(ret2tick(Rp_ew_cc(counter-Six_mo:counter-1,:)));
-    # MDDw(big_loop,2) = MaxDD;
-    # Sortino = sortinoratio(Rp_ew_cc(counter-Six_mo:counter-1,:),0);
-    # Sortino_w(big_loop,2) = Sortino;
-
+    start_idx = counter - six_months + 1
+    end_idx = counter + 1
+    
+    # Committed Capital (CC)
+    daily_cc_returns = Rp_ew_cc['Return'][start_idx:end_idx][:six_months]
+    semester_cumprod_cc = np.cumprod(1 + daily_cc_returns)
+    continuous_cumprod_cc = semester_cumprod_cc * last_cc_val
+    ret_acum_df['CC'][start_idx:end_idx] = continuous_cumprod_cc
+    if not continuous_cumprod_cc.empty:
+        last_cc_val = continuous_cumprod_cc.iloc[-1]
     #
     # vw-weighted, fully invested; weights "restart" from 1 every time a new pair is opened;
     # Capital divided between open portfolios.
@@ -587,15 +595,28 @@ while big_loop < (years * 2 - 2):
     # Sortino = sortinoratio(Rp_vw_fi(counter-Six_mo:counter-1,:),0);
     # Sortino_w(big_loop,4) = Sortino;
 
+    # Fully Invested (FI)
+    daily_fi_returns = Rp_vw_fi['Return'][start_idx:end_idx][:six_months]
+    semester_cumprod_fi = np.cumprod(1 + daily_fi_returns)
+    continuous_cumprod_fi = semester_cumprod_fi * last_fi_val
+    ret_acum_df['FI'][start_idx:end_idx] = continuous_cumprod_fi
+    if not continuous_cumprod_fi.empty:
+        last_fi_val = continuous_cumprod_fi.iloc[-1]
+
     RmRf[counter-six_months+1:counter +
                    1] = (Rm.iloc[counter-six_months+1:counter + 1, :] - Rf.iloc[counter-six_months+1:counter + 1, :]).to_numpy()
 
     risk_free['Return'][counter-six_months+1:counter + 1] = (Rf.iloc[counter-six_months+1:counter + 1, 0])
 
-    ret_acum_df['RMRF'][counter-six_months+1:counter+1] = np.cumprod(
-        1+(Rm.iloc[:six_months, 0]-Rf.iloc[:six_months, 0]).to_numpy())
+    # Market Benchmark (RMRF)
+    daily_rmrf_returns = (Rm.iloc[start_idx:end_idx, 0] - Rf.iloc[start_idx:end_idx, 0]).to_numpy()[:six_months]
+    semester_cumprod_rmrf = np.cumprod(1 + daily_rmrf_returns)
+    continuous_cumprod_rmrf = semester_cumprod_rmrf * last_rmrf_val
+    ret_acum_df['RMRF'][start_idx:end_idx] = continuous_cumprod_rmrf
+    if continuous_cumprod_rmrf.size > 0:
+        last_rmrf_val = continuous_cumprod_rmrf[-1]
 
-    ret_acum_df['SEMESTER'][counter-six_months+1:counter+1] = int(big_loop)
+    ret_acum_df['SEMESTER'][start_idx:end_idx] = int(big_loop)
     Rp_ew_cc['Semester'][counter-six_months+1:counter+1] = int(big_loop)
     Rp_vw_fi['Semester'][counter-six_months+1:counter+1] = int(big_loop)
     risk_free['Semester'][counter-six_months+1:counter+1] = int(big_loop)
