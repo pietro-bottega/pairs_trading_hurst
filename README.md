@@ -1,5 +1,11 @@
 # Pairs trading
 
+Pairs trading is a market-neutral strategy that exploits temporary pricing inefficiencies between two highly correlated securities.
+The core principle is to identify a pair of assets whose prices historically move together. When their price relationship (spread) diverges from the norm, a trader executes the trade by:
+- Going long (buying) the underperforming security.
+- Going short (selling) the outperforming security.
+The position is closed for a profit when the spread between the two securities reverts to its historical average. Since the strategy relies on the relative price movement of the pair, it is theoretically hedged against broad market risk.
+
 `requirements.yml` has all libraries needed execute code.
 
 #### 1. Using conda, run in CLI
@@ -121,3 +127,4 @@ Created directory
 Additional files for support:        
 - Outputs `distance_data/period_crisis_classification.csv`
 - Outputs `cointegration_data/period_crisis_classification.csv`
+
